@@ -1,7 +1,7 @@
 {
-  "name": "bundle-size",
+  "name": "package-stats",
   "version": "1.0.0",
-  "description": "Measure the size of your code.",
+  "description": "Generate stats about a package.",
   "main": "index.js",
   "dependencies": {
     "byte-length": "^1.0.2",
@@ -21,6 +21,6 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "author": "",
+  "author": "Trey Shugart <treshugart@gmail.com>",
   "license": "MIT"
 }
