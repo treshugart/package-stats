@@ -5,13 +5,15 @@ const cosmiconfig = require("cosmiconfig");
 const findUp = require("find-up");
 const fs = require("fs");
 const gzipSize = require("gzip-size");
-const optional = require("optional");
 const path = require("path");
+const resolve = require("resolve");
 const sourceTrace = require("source-trace");
 
 const transpilers = {
   js: createTranspiler("babel-core", async (js, file, contents) => {
-    return js.transform(contents, await cosmiconfig("babel").search()).code;
+    const babelJson = await cosmiconfig("babel").search();
+    return js.transform(contents, babelJson ? babelJson.config : undefined)
+      .code;
   }),
   ts: createTranspiler("typescript", async (ts, file, contents) => {
     const tsconfigPath = await findUp("tsconfig.json", {
@@ -23,24 +25,23 @@ const transpilers = {
 };
 
 function createTranspiler(transpiler, caller) {
-  const transpilerModule = optional(transpiler);
-  if (transpilerModule) {
-    return (file, contents) => caller(transpilerModule, file, contents);
-  }
+  return (file, contents) => {
+    try {
+      const transpilerPath = resolve.sync(transpiler, {
+        basedir: path.dirname(file.resolvedPath)
+      });
+      const transpilerModule = require(transpilerPath);
+      return caller(transpilerModule, file, contents);
+    } catch (e) {
+      return contents;
+    }
+  };
 }
 
 async function transpile(file) {
   const contents = fs.readFileSync(file.resolvedPath).toString("utf-8");
   const transpiler = transpilers[file.suffix];
   return transpiler ? await transpiler(file, contents) : contents;
-}
-
-async function transpileAll(files) {
-  let contents = "";
-  for (const file of files) {
-    contents += await transpile(file);
-  }
-  return contents;
 }
 
 // ## Public API
@@ -67,11 +68,11 @@ async function gz(arr) {
 }
 
 async function min(arr) {
-  return Promise.resolve(arr.map(async a => await a.min));
+  return Promise.resolve(await arr.map(async a => await a.min));
 }
 
 async function raw(arr) {
-  return Promise.resolve(arr.map(async a => await a.raw));
+  return Promise.resolve(await arr.map(async a => await a.raw));
 }
 
 async function size(arr) {

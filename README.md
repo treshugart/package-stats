@@ -2,4 +2,7 @@
 
 > Measure the size of your code.
 
-- Automatically uses `babel` if installed along with a babel configuration, if provided.
+- Output bundle sizes.
+- Min / GZ support.
+- Supports Babel, TypeScript, Less, Sass and more.
+- Filter and show stats about different types of files (JS, CSS, images, etc).
