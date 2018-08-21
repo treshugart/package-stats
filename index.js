@@ -85,11 +85,13 @@ async function trace(entries) {
     return {
       ...file,
       get min() {
-        return (async () =>
-          closure.compile({
+        return (async () => {
+          const compiled = closure.compile({
             compilationLevel: "ADVANCED",
             jsCode: [{ src: await this.raw }]
-          }).compiledCode)();
+          });
+          return compiled.compiledCode;
+        })();
       },
       get raw() {
         return transpile(file);
