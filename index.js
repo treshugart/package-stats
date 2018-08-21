@@ -7,13 +7,35 @@ const fs = require("fs");
 const gzipSize = require("gzip-size");
 const path = require("path");
 const resolve = require("resolve");
-const sourceTrace = require("source-trace");
+const { trace: sourceTrace } = require("source-trace");
+
+function resolveBabelPlugin(file) {
+  const basedir = path.dirname(file.resolvedPath);
+  return function(plugin) {
+    if (typeof plugin === "string") {
+      return resolve.sync(plugin, { basedir });
+    } else if (Array.isArray(plugin)) {
+      return [resolve.sync(plugin[0], { basedir }), plugin[1]];
+    }
+    return plugin;
+  };
+}
 
 const transpilers = {
   js: createTranspiler("babel-core", async (js, file, contents) => {
-    const babelJson = await cosmiconfig("babel").search();
-    return js.transform(contents, babelJson ? babelJson.config : undefined)
-      .code;
+    const babelJson = await cosmiconfig("babel").search(
+      path.dirname(file.resolvedPath)
+    );
+    if (babelJson) {
+      const resolver = resolveBabelPlugin(file);
+      babelJson.config.plugins = (babelJson.plugins || []).map(resolver);
+      babelJson.config.presets = (babelJson.presets || []).map(resolver);
+      babelJson.config.filename = file.resolvedPath;
+    }
+    return js.transform(
+      contents,
+      babelJson ? babelJson.config : { filename: file.resolvedPath }
+    ).code;
   }),
   ts: createTranspiler("typescript", async (ts, file, contents) => {
     const tsconfigPath = await findUp("tsconfig.json", {
@@ -41,7 +63,9 @@ function createTranspiler(transpiler, caller) {
 async function transpile(file) {
   const contents = fs.readFileSync(file.resolvedPath).toString("utf-8");
   const transpiler = transpilers[file.suffix];
-  return transpiler ? await transpiler(file, contents) : contents;
+  return transpiler && file.resolvedPath.indexOf("node_modules") === -1
+    ? await transpiler(file, contents)
+    : contents;
 }
 
 // ## Public API
@@ -79,8 +103,8 @@ async function size(arr) {
   return byteLength(await join(arr));
 }
 
-async function trace(entries) {
-  const traced = await sourceTrace(entries);
+async function trace(entries, opts) {
+  const traced = await sourceTrace(entries, opts);
   return traced.map(file => {
     return {
       ...file,
