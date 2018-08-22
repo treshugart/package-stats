@@ -10,7 +10,7 @@ const path = require("path");
 const resolve = util.promisify(require("resolve"));
 
 async function getConfig(name, file) {
-  const conf = await cosmiconfig(name).search(path.dirname(file));
+  const conf = await cosmiconfig(name).search();
   return conf ? conf.config : {};
 }
 
@@ -19,46 +19,12 @@ async function getContents(file) {
   return cont.toString("utf-8");
 }
 
-async function find(dep, file) {
-  let found;
+async function find(dep) {
   try {
-    found = await resolve(dep, { basedir: path.dirname(file.resolvedPath) });
+    return require(await resolve(dep, { basedir: process.cwd() }));
   } catch (e) {
-    try {
-      found = await resolve(dep, { basedir: __dirname });
-    } catch (e) {
-      return null;
-    }
+    return null;
   }
-  return require(found);
-}
-
-async function resolveBabelConfig(file) {
-  function resolver(plugin) {
-    if (typeof plugin === "string") {
-      return resolve.sync(plugin, { basedir });
-    } else if (Array.isArray(plugin)) {
-      return [resolve.sync(plugin[0], { basedir }), plugin[1]];
-    }
-    return plugin;
-  }
-  const conf = await getConfig("babel", file.resolvedPath);
-  conf.plugins = (conf.plugins || []).map(resolver);
-  conf.presets = (conf.presets || []).map(resolver);
-  conf.filename = file.resolvedPath;
-  return conf;
-}
-
-async function resolveTsConfig(file) {
-  const conf = await findUp("tsconfig.json", {
-    cwd: path.dirname(file.resolvedPath)
-  });
-
-  if (conf) {
-    return require(conf);
-  }
-
-  return getConfig("ts");
 }
 
 // ## Public API
@@ -72,24 +38,43 @@ const categories = {
 
 const transpilers = {
   async js(file, contents) {
-    const conf = await resolveBabelConfig(file);
-    const comp = await find("babel-core", file);
+    const transpiler = await find("babel-core");
 
     // Since Babel shares the .js suffix, we only transpile if found.
-    return comp ? comp.transform(contents, conf).code : contents;
+    if (transpiler) {
+      // We attempt to transpile using the babelrc in the current project.
+      // If we were to allow Babel to use babelrc files here, it would try
+      // and load presets / plugins from dependencies in node_modules, and
+      // if they're devDependencies, then they won't be found.
+      //
+      // It's very likely you're getting the pre-transpiled source anyways.
+      // This ensures that it's transpiled to what your project expects.
+      // This means that if a project is shipped in ES2015, and you require
+      // ES5, that the dependency will be transpiled to ES5.
+      const config = {
+        ...(await getConfig("babel")),
+        babelrc: false,
+        filename: path.relative(process.cwd(), file.resolvedPath)
+      };
+
+      const transpiled = transpiler.transform(contents, config).code;
+      return transpiled;
+    }
+
+    return contents;
   },
   async ts(file, contents) {
-    const conf = await resolveTsConfig(file);
-    const comp = await find("typescript", file);
+    const transpiler = await find("typescript");
 
     // Since the .ts suffix is explicit, we require TypeScript be present.
-    if (!comp) {
+    if (!transpiler) {
       throw new Error(
         `Trying to transpile ${file.resolvedPath} but TypeScript was not found.`
       );
     }
 
-    return comp.transpileModule(contents, conf).outputText;
+    const config = (await find("./tsconfig.json")) || (await getConfig("ts"));
+    return transpiler.transpileModule(contents, config).outputText;
   }
 };
 
@@ -103,10 +88,6 @@ function byPath(matcher) {
   return function(file) {
     return file.resolvedPath.match(matcher);
   };
-}
-
-async function join(files, str = "") {
-  return (await Promise.all((await files).map(getContents))).join(await str);
 }
 
 async function min(str) {
@@ -131,7 +112,6 @@ module.exports = {
   byCategory,
   byPath,
   categories,
-  join,
   min,
   size,
   transpile,
