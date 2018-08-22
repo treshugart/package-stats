@@ -1,3 +1,4 @@
+const util = require("util");
 const { byteLength } = require("byte-length");
 const bytes = require("bytes");
 const closure = require("google-closure-compiler-js");
@@ -6,20 +7,28 @@ const findUp = require("find-up");
 const fs = require("fs-extra");
 const gzipSize = require("gzip-size");
 const path = require("path");
-const resolve = require("resolve");
+const resolve = util.promisify(require("resolve"));
 
-async function config(name, file) {
+async function getConfig(name, file) {
   const conf = await cosmiconfig(name).search(path.dirname(file));
   return conf ? conf.config : {};
 }
 
-async function find(file) {
+async function getContents(file) {
+  const cont = await fs.readFile(file.resolvedPath);
+  return cont.toString("utf-8");
+}
+
+async function find(dep, file) {
+  let found;
   try {
-    found = await resolve(file, { basedir: path.dirname(file.resolvedPath) });
+    found = await resolve(dep, { basedir: path.dirname(file.resolvedPath) });
   } catch (e) {
-    found = await resolve(file, { basedir: __dirname });
-  } finally {
-    return null;
+    try {
+      found = await resolve(dep, { basedir: __dirname });
+    } catch (e) {
+      return null;
+    }
   }
   return require(found);
 }
@@ -33,7 +42,7 @@ async function resolveBabelConfig(file) {
     }
     return plugin;
   }
-  const conf = await config("babel", file.resolvedPath);
+  const conf = await getConfig("babel", file.resolvedPath);
   conf.plugins = (conf.plugins || []).map(resolver);
   conf.presets = (conf.presets || []).map(resolver);
   conf.filename = file.resolvedPath;
@@ -49,7 +58,7 @@ async function resolveTsConfig(file) {
     return require(conf);
   }
 
-  return config("ts");
+  return getConfig("ts");
 }
 
 // ## Public API
@@ -64,19 +73,19 @@ const categories = {
 const transpilers = {
   async js(file, contents) {
     const conf = await resolveBabelConfig(file);
-    const comp = await find("babe-core");
+    const comp = await find("babel-core", file);
 
     // Since Babel shares the .js suffix, we only transpile if found.
     return comp ? comp.transform(contents, conf).code : contents;
   },
   async ts(file, contents) {
     const conf = await resolveTsConfig(file);
-    const comp = await find("typescript");
+    const comp = await find("typescript", file);
 
     // Since the .ts suffix is explicit, we require TypeScript be present.
     if (!comp) {
       throw new Error(
-        `Trying to transpile ${file} but TypeScript was not found.`
+        `Trying to transpile ${file.resolvedPath} but TypeScript was not found.`
       );
     }
 
@@ -97,9 +106,7 @@ function byPath(matcher) {
 }
 
 async function join(files, str = "") {
-  return (await Promise.all(
-    (await files).map(async file => await fs.readFile(file.resolvedPath))
-  )).join(await str);
+  return (await Promise.all((await files).map(getContents))).join(await str);
 }
 
 async function min(str) {
@@ -115,7 +122,7 @@ async function size(str, { gz } = { gz: false }) {
 }
 
 async function transpile(file) {
-  const contents = await fs.readFile(file.resolvedPath);
+  const contents = await getContents(file);
   const transpiler = transpilers[file.suffix];
   return transpiler ? await transpiler(file, contents) : contents;
 }
