@@ -3,69 +3,53 @@ const bytes = require("bytes");
 const closure = require("google-closure-compiler-js");
 const cosmiconfig = require("cosmiconfig");
 const findUp = require("find-up");
-const fs = require("fs");
+const fs = require("fs-extra");
 const gzipSize = require("gzip-size");
 const path = require("path");
 const resolve = require("resolve");
-const { trace: sourceTrace } = require("source-trace");
 
-function resolveBabelPlugin(file) {
-  const basedir = path.dirname(file.resolvedPath);
-  return function(plugin) {
+async function config(name, file) {
+  const conf = await cosmiconfig(name).search(path.dirname(file));
+  return conf ? conf.config : {};
+}
+
+async function find(file) {
+  try {
+    found = await resolve(file, { basedir: path.dirname(file.resolvedPath) });
+  } catch (e) {
+    found = await resolve(file, { basedir: __dirname });
+  } finally {
+    return null;
+  }
+  return require(found);
+}
+
+async function resolveBabelConfig(file) {
+  function resolver(plugin) {
     if (typeof plugin === "string") {
       return resolve.sync(plugin, { basedir });
     } else if (Array.isArray(plugin)) {
       return [resolve.sync(plugin[0], { basedir }), plugin[1]];
     }
     return plugin;
-  };
+  }
+  const conf = await config("babel", file.resolvedPath);
+  conf.plugins = (conf.plugins || []).map(resolver);
+  conf.presets = (conf.presets || []).map(resolver);
+  conf.filename = file.resolvedPath;
+  return conf;
 }
 
-const transpilers = {
-  js: createTranspiler("babel-core", async (js, file, contents) => {
-    const babelJson = await cosmiconfig("babel").search(
-      path.dirname(file.resolvedPath)
-    );
-    if (babelJson) {
-      const resolver = resolveBabelPlugin(file);
-      babelJson.config.plugins = (babelJson.plugins || []).map(resolver);
-      babelJson.config.presets = (babelJson.presets || []).map(resolver);
-      babelJson.config.filename = file.resolvedPath;
-    }
-    return js.transform(
-      contents,
-      babelJson ? babelJson.config : { filename: file.resolvedPath }
-    ).code;
-  }),
-  ts: createTranspiler("typescript", async (ts, file, contents) => {
-    const tsconfigPath = await findUp("tsconfig.json", {
-      cwd: path.dirname(file.resolvedPath)
-    });
-    const tsconfigJson = tsconfigPath ? require(tsconfigPath) : {};
-    return ts.transpileModule(contents, tsconfigJson).outputText;
-  })
-};
+async function resolveTsConfig(file) {
+  const conf = await findUp("tsconfig.json", {
+    cwd: path.dirname(file.resolvedPath)
+  });
 
-function createTranspiler(transpiler, caller) {
-  return (file, contents) => {
-    try {
-      const transpilerPath = resolve.sync(transpiler, {
-        basedir: path.dirname(file.resolvedPath)
-      });
-      const transpilerModule = require(transpilerPath);
-      return caller(transpilerModule, file, contents);
-    } catch (e) {
-      return contents;
-    }
-  };
-}
+  if (conf) {
+    return require(conf);
+  }
 
-async function transpile(file) {
-  const contents = fs.readFileSync(file.resolvedPath).toString("utf-8");
-  const transpiler = transpilers[file.suffix];
-  return transpiler && file.resolvedPath.indexOf("node_modules") === -1
-    ? await transpiler(file, contents)
-    : contents;
+  return config("ts");
 }
 
 // ## Public API
@@ -77,59 +61,72 @@ const categories = {
   script: ["js", "ts"]
 };
 
+const transpilers = {
+  async js(file, contents) {
+    const conf = await resolveBabelConfig(file);
+    const comp = await find("babe-core");
+
+    // Since Babel shares the .js suffix, we only transpile if found.
+    return comp ? comp.transform(contents, conf).code : contents;
+  },
+  async ts(file, contents) {
+    const conf = await resolveTsConfig(file);
+    const comp = await find("typescript");
+
+    // Since the .ts suffix is explicit, we require TypeScript be present.
+    if (!comp) {
+      throw new Error(
+        `Trying to transpile ${file} but TypeScript was not found.`
+      );
+    }
+
+    return comp.transpileModule(contents, conf).outputText;
+  }
+};
+
 function byCategory(category) {
   return function(file) {
     return categories[category].indexOf(file.suffix) > -1;
   };
 }
 
-async function join(arr, str = "") {
-  return (await Promise.all(await arr)).join(await str);
+function byPath(matcher) {
+  return function(file) {
+    return file.resolvedPath.match(matcher);
+  };
 }
 
-async function gz(arr) {
-  return gzipSize(await join(arr));
+async function join(files, str = "") {
+  return (await Promise.all(
+    (await files).map(async file => await fs.readFile(file.resolvedPath))
+  )).join(await str);
 }
 
-async function min(arr) {
-  return Promise.resolve(await arr.map(async a => await a.min));
-}
-
-async function raw(arr) {
-  return Promise.resolve(await arr.map(async a => await a.raw));
-}
-
-async function size(arr) {
-  return byteLength(await join(arr));
-}
-
-async function trace(entries, opts) {
-  const traced = await sourceTrace(entries, opts);
-  return traced.map(file => {
-    return {
-      ...file,
-      get min() {
-        return (async () => {
-          const compiled = closure.compile({
-            compilationLevel: "ADVANCED",
-            jsCode: [{ src: await this.raw }]
-          });
-          return compiled.compiledCode;
-        })();
-      },
-      get raw() {
-        return transpile(file);
-      }
-    };
+async function min(str) {
+  const compiled = closure.compile({
+    compilationLevel: "ADVANCED",
+    jsCode: [{ src: await str }]
   });
+  return compiled.compiledCode;
+}
+
+async function size(str, { gz } = { gz: false }) {
+  return gz ? gzipSize(await str) : byteLength(await str);
+}
+
+async function transpile(file) {
+  const contents = await fs.readFile(file.resolvedPath);
+  const transpiler = transpilers[file.suffix];
+  return transpiler ? await transpiler(file, contents) : contents;
 }
 
 module.exports = {
   byCategory,
-  gz,
+  byPath,
+  categories,
   join,
   min,
-  raw,
   size,
-  trace
+  transpile,
+  transpilers
 };
