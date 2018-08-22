@@ -24,5 +24,6 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "Trey Shugart <treshugart@gmail.com>",
-  "license": "MIT"
+  "license": "MIT",
+  "bin": "./bin.js"
 }
